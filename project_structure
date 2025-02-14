@@ -1,0 +1,17 @@
+bazaar_trading/
+├── src/
+│   ├── __init__.py
+│   ├── data/
+│   │   ├── __init__.py
+│   │   ├── collectors.py
+│   │   └── models.py
+│   ├── config/
+│   │   ├── __init__.py
+│   │   └── settings.py
+│   └── utils/
+│       ├── __init__.py
+│       └── logger.py
+├── tests/
+│   └── __init__.py
+├── requirements.txt
+└── README.md 
