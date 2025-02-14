@@ -3,28 +3,24 @@ from datetime import datetime
 import time
 from typing import Dict, List, Optional
 from tqdm import tqdm
+import aiohttp
+from dateutil import parser
 
 from ..utils.logger import get_logger
-from ..config.settings import COFLNET_API_BASE_URL, COFLNET_API_KEY
-from .models import SessionLocal, BazaarItem
+from ..config.settings import COFLNET_API_BASE_URL
+from src.data.models import SessionLocal, BazaarItem
 
 logger = get_logger(__name__)
 
 class BazaarDataCollector:
     def __init__(self):
         self.base_url = COFLNET_API_BASE_URL
-        self.api_key = COFLNET_API_KEY
-        self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
     
     def get_all_item_ids(self) -> List[str]:
         """Fetch all available bazaar item IDs."""
         try:
             response = requests.get(
-                f"{self.base_url}/items/bazaar/tags",
-                headers=self.headers
+                f"{self.base_url}/items/bazaar/tags"
             )
             response.raise_for_status()
             return response.json()
@@ -32,19 +28,42 @@ class BazaarDataCollector:
             logger.error(f"Error fetching item IDs: {e}")
             raise
 
-    def get_current_prices(self) -> Dict:
-        """Fetch current bazaar prices for all items."""
+    async def get_current_prices(self) -> Dict[str, Dict[str, float]]:
+        """
+        Fetches current bazaar prices from Hypixel API.
+        Returns a dictionary mapping item IDs to their price data.
+        """
+        url = "https://api.hypixel.net/v2/skyblock/bazaar"
+        
         try:
-            response = requests.get(
-                f"{self.base_url}/bazaar/snapshot",
-                headers=self.headers
-            )
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        raise Exception(f"Failed to fetch bazaar data: {response.status}")
+                    
+                    data = await response.json()
+                    
+                    if not data.get('success'):
+                        raise Exception("API request was not successful")
+                    
+                    prices = {}
+                    for product_id, product_data in data['products'].items():
+                        quick_status = product_data.get('quick_status', {})
+                        if quick_status:
+                            prices[product_id] = {
+                                'sell_price': quick_status.get('sellPrice', 0.0),
+                                'sell_volume': quick_status.get('sellVolume', 0),
+                                'sell_moving_week': quick_status.get('sellMovingWeek', 0),
+                                'buy_price': quick_status.get('buyPrice', 0.0),
+                                'buy_volume': quick_status.get('buyVolume', 0),
+                                'buy_moving_week': quick_status.get('buyMovingWeek', 0)
+                            }
+                    
+                    return prices
+        except Exception as e:
             logger.error(f"Error fetching current prices: {e}")
             raise
-    
+
     def get_item_history(
         self,
         item_id: str,
@@ -61,16 +80,25 @@ class BazaarDataCollector:
             
             response = requests.get(
                 f"{self.base_url}/bazaar/{item_id}/history",
-                headers=self.headers,
                 params=params
             )
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            
+            # Debugging: Print the data structure
+            logger.debug(f"Data for {item_id}: {data}")
+            
+            # Check if 'item_id' is included in each entry
+            for entry in data:
+                if 'item_id' not in entry:
+                    entry['item_id'] = item_id  # Add item_id if missing
+            
+            return data
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching history for item {item_id}: {e}")
             raise
 
-    def collect_full_history(self, rate_limit_delay: float = 0.5) -> List[Dict]:
+    def collect_full_history(self, rate_limit_delay: float = 0) -> List[Dict]:
         """
         Collect complete historical data for all bazaar items.
         
@@ -121,10 +149,10 @@ class BazaarDataCollector:
             logger.error(f"Error in collect_full_history: {e}")
             raise
 
-    def collect_and_store_current_data(self):
+    async def collect_and_store_current_data(self):
         """Collect current bazaar data and store it in the database."""
         try:
-            data = self.get_current_prices()
+            data = await self.get_current_prices()
             
             # Create database session
             db = SessionLocal()
@@ -134,14 +162,14 @@ class BazaarDataCollector:
                     bazaar_item = BazaarItem(
                         item_id=item_id,
                         timestamp=datetime.utcnow(),
-                        buy_price=item_data.get('buy', 0),
-                        sell_price=item_data.get('sell', 0),
-                        max_buy=item_data.get('maxBuy', 0),
-                        max_sell=item_data.get('maxSell', 0),
-                        min_buy=item_data.get('minBuy', 0),
-                        min_sell=item_data.get('minSell', 0),
-                        buy_volume=item_data.get('buyVolume', 0),
-                        sell_volume=item_data.get('sellVolume', 0)
+                        buy_price=item_data.get('buy_price', 0),
+                        sell_price=item_data.get('sell_price', 0),
+                        max_buy=item_data.get('max_buy', 0),
+                        max_sell=item_data.get('max_sell', 0),
+                        min_buy=item_data.get('min_buy', 0),
+                        min_sell=item_data.get('min_sell', 0),
+                        buy_volume=item_data.get('buy_volume', 0),
+                        sell_volume=item_data.get('sell_volume', 0)
                     )
                     db.add(bazaar_item)
                 
@@ -156,28 +184,38 @@ class BazaarDataCollector:
             logger.error(f"Error in collect_and_store_current_data: {e}")
             raise
 
-    def store_historical_data(self, historical_data: List[Dict]):
+    def store_historical_data(self, historical_data: List[Dict], item_id: str):
         """Store historical data in the database."""
         try:
             db = SessionLocal()
             try:
+                count = 0
                 for entry in tqdm(historical_data, desc="Storing historical data", ncols=80):
-                    bazaar_item = BazaarItem(
-                        item_id=entry['item_id'],
-                        timestamp=datetime.fromtimestamp(entry['timestamp'] / 1000),  # Convert from milliseconds
-                        buy_price=entry['buy'],
-                        sell_price=entry['sell'],
-                        max_buy=entry['max_buy'],
-                        max_sell=entry['max_sell'],
-                        min_buy=entry['min_buy'],
-                        min_sell=entry['min_sell'],
-                        buy_volume=entry['buy_volume'],
-                        sell_volume=entry['sell_volume']
-                    )
-                    db.add(bazaar_item)
+                    try:
+                        # Parse the ISO 8601 timestamp or use current time if not available
+                        timestamp = parser.isoparse(entry.get('timestamp', datetime.utcnow().isoformat()))
+                        
+                        bazaar_item = BazaarItem(
+                            item_id=item_id,
+                            timestamp=timestamp,
+                            buy_price=float(entry.get('buy', entry.get('buyPrice', 0))),
+                            sell_price=float(entry.get('sell', entry.get('sellPrice', 0))),
+                            buy_volume=int(entry.get('buyVolume', 0)),
+                            sell_volume=int(entry.get('sellVolume', 0)),
+                            buy_moving_week=int(entry.get('buyMovingWeek', 0)),
+                            sell_moving_week=int(entry.get('sellMovingWeek', 0))
+                        )
+                        db.add(bazaar_item)
+                        count += 1
+                    except KeyError as e:
+                        logger.error(f"Missing key {e} in entry: {entry}")
+                        continue
+                    except ValueError as e:
+                        logger.error(f"Value error {e} in entry: {entry}")
+                        continue
                 
                 db.commit()
-                logger.info(f"Successfully stored {len(historical_data)} historical entries")
+                logger.info(f"Successfully stored {count} historical entries for item {item_id}")
             finally:
                 db.close()
         except Exception as e:

@@ -11,16 +11,14 @@ class BazaarItem(Base):
     __tablename__ = "bazaar_items"
     
     id = Column(Integer, primary_key=True)
-    item_id = Column(String, index=True)
-    timestamp = Column(DateTime, index=True, default=datetime.utcnow)
-    buy_price = Column(Float)  # Regular buy price
-    sell_price = Column(Float)  # Regular sell price
-    max_buy = Column(Float)    # Maximum buy price
-    max_sell = Column(Float)   # Maximum sell price
-    min_buy = Column(Float)    # Minimum buy price
-    min_sell = Column(Float)   # Minimum sell price
+    item_id = Column(String)
+    timestamp = Column(DateTime)
+    buy_price = Column(Float)
+    sell_price = Column(Float)
     buy_volume = Column(Integer)
     sell_volume = Column(Integer)
+    buy_moving_week = Column(Integer)
+    sell_moving_week = Column(Integer)
     
     def __repr__(self):
         return f"<BazaarItem(item_id={self.item_id}, timestamp={self.timestamp})>"
